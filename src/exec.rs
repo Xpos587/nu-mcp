@@ -11,7 +11,7 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex as TokioMutex;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use schemars::JsonSchema;
 
 /// NuExec tool arguments
@@ -357,6 +357,7 @@ impl NuExecutor {
         // Read current file content
         let initial_code = fs::read_to_string(&path_obj).await
             .map_err(|e| anyhow::anyhow!("Failed to read file {}: {}", path, e))?;
+        let original_len = initial_code.len();
 
         // Get provider configuration from environment
         let api_url = std::env::var("APPLY_API_URL")
@@ -365,6 +366,11 @@ impl NuExecutor {
             .unwrap_or_else(|_| "ollama".to_string());
         let model = std::env::var("APPLY_MODEL")
             .unwrap_or_else(|_| "morph-v3-fast".to_string());
+
+        // Warn if using non-Fast-Apply model
+        if !model.contains("morph") && !model.contains("fast") {
+            warn!("Using non-Fast-Apply model '{}' may cause corruption. Consider using 'morph-v3-fast'.", model);
+        }
 
         // Construct the content for Fast Apply
         let content = format!("{}\n{}\n{}", instructions, initial_code, code_edit);
@@ -399,9 +405,20 @@ impl NuExecutor {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid API response format: missing content"))?;
 
-        // Write result back to file
-        fs::write(&path_obj, result).await
+        // Sanitize the response to prevent corruption
+        let sanitized = sanitize_response(result, original_len)
+            .map_err(|e| anyhow::anyhow!("Response sanitization failed: {}", e))?;
+
+        // Validate sanitized content is not empty
+        if sanitized.trim().is_empty() {
+            anyhow::bail!("Sanitized response is empty - refusing to overwrite file");
+        }
+
+        // Write sanitized result back to file
+        fs::write(&path_obj, &sanitized).await
             .map_err(|e| anyhow::anyhow!("Failed to write file {}: {}", path, e))?;
+
+        info!("Successfully applied edit to {} ({} -> {} chars)", path, original_len, sanitized.len());
 
         Ok(NuApplyResult {
             path: path.to_string(),
@@ -422,7 +439,7 @@ async fn monitor_and_drain_pipes(state: AppState, id: String) {
         }
     };
 
-    // Take the child out for monitoring (ProcessInfo stays in map)
+    // Take the child out for monitoring (ProcessInfo stays in the map)
     let mut child = match state.take_child(&id).await {
         Some(c) => c,
         None => {
@@ -543,4 +560,134 @@ pub struct NuApplyResult {
     pub path: String,
     pub status: String,
     pub message: String,
+}
+
+/// Extract code content from markdown-wrapped API responses
+/// Handles formats like "```lua\ncode\n```" or "```\ncode\n```"
+fn extract_code_block(response: &str) -> String {
+    // Find all code blocks and extract their content
+    let mut blocks = Vec::new();
+    let mut in_block = false;
+    let mut current_block = String::new();
+
+    for line in response.lines() {
+        if line.trim().starts_with("```") {
+            if in_block {
+                // End of block - save it
+                if !current_block.is_empty() {
+                    blocks.push(current_block.clone());
+                }
+                current_block = String::new();
+                in_block = false;
+            } else {
+                // Start of block
+                in_block = true;
+            }
+        } else if in_block {
+            current_block.push_str(line);
+            current_block.push('\n');
+        }
+    }
+
+    // If we found code blocks, use the largest one
+    if !blocks.is_empty() {
+        blocks.into_iter()
+            .max_by_key(|b| b.len())
+            .unwrap_or_default()
+    } else {
+        // No code blocks found - return original
+        response.to_string()
+    }
+}
+
+/// Check if the response appears to be conversational text rather than code
+/// This catches cases where the LLM explains instead of returning code
+fn is_conversational_response(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+    let content_trimmed = content.trim();
+
+    // Check for common conversational patterns
+    let conversational_patterns = [
+        "here is the",
+        "i've updated",
+        "i have updated",
+        "the code has been",
+        "here's the",
+        "below is the",
+        "the updated code",
+        "sure, here",
+        "here you go",
+    ];
+
+    // If it's very short and contains conversational markers
+    if content_trimmed.len() < 500 {
+        for pattern in &conversational_patterns {
+            if content_lower.contains(pattern) {
+                return true;
+            }
+        }
+    }
+
+    // Check if it's entirely conversational with no code-like content
+    // (no braces, no function keywords, no markers)
+    let has_code_indicators = content.contains("{")
+        || content.contains("}")
+        || content.contains("fn ")
+        || content.contains("function")
+        || content.contains("return")
+        || content.contains("// ... existing code ...")
+        || content.contains("-- ... existing code ...");
+
+    // If we have conversational patterns but no code indicators, it's likely conversational
+    if !has_code_indicators && content_trimmed.len() < 2000 {
+        for pattern in &conversational_patterns {
+            if content_lower.contains(pattern) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Sanitize API response by stripping markdown and validating content
+fn sanitize_response(response: &str, original_len: usize) -> anyhow::Result<String> {
+    let content = response.trim();
+
+    // Check for empty response
+    if content.is_empty() {
+        anyhow::bail!("API returned empty response");
+    }
+
+    // If response contains markdown code blocks, extract content
+    let sanitized = if content.contains("```") {
+        extract_code_block(content)
+    } else {
+        content.to_string()
+    };
+
+    let sanitized = sanitized.trim();
+
+    // Check for conversational response
+    if is_conversational_response(sanitized) {
+        anyhow::bail!("Model returned conversational response instead of code. Response: {}",
+                      sanitized.chars().take(200).collect::<String>());
+    }
+
+    // Validate output length is reasonable (not severely truncated)
+    // Allow up to 90% reduction for deletions, but not more
+    if !sanitized.is_empty() && sanitized.len() < original_len / 10 {
+        anyhow::bail!("Output appears severely truncated: {} chars vs {} original",
+                      sanitized.len(), original_len);
+    }
+
+    // Check if response contains the marker (should be present in most edits)
+    // Only skip this check for very small files where markers might not be needed
+    if original_len > 500 && !sanitized.contains("... existing code ...") {
+        // For larger files, the marker should typically be preserved
+        // But we allow it in case the model legitimately removed it
+        warn!("Response does not contain '... existing code ...' marker");
+    }
+
+    Ok(sanitized.to_string())
 }

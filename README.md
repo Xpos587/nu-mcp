@@ -17,6 +17,7 @@ Just two things:
 - **Nushell** (`nu`) to run commands
 
 Install Nushell:
+
 ```bash
 # macOS
 brew install nushell
@@ -70,15 +71,16 @@ Add this to your Claude Desktop config (`~/Library/Application Support/Claude/cl
 
 Run a Nushell command. Everything goes through here.
 
-| Field      | Type    | Required | Notes                              |
-| ---------- | ------- | -------- | ----------------------------------- |
-| `command`  | string  | Yes      | The Nushell pipeline to run         |
-| `background` | boolean | No      | Run asynchronously (default: false) |
-| `cwd`      | string  | No       | Override working directory          |
-| `env`      | object  | No       | Extra environment variables         |
-| `timeout`  | number  | No       | Timeout in seconds (default: 60)    |
+| Field        | Type    | Required | Notes                               |
+| ------------ | ------- | -------- | ----------------------------------- |
+| `command`    | string  | Yes      | The Nushell pipeline to run         |
+| `background` | boolean | No       | Run asynchronously (default: false) |
+| `cwd`        | string  | No       | Override working directory          |
+| `env`        | object  | No       | Extra environment variables         |
+| `timeout`    | number  | No       | Timeout in seconds (default: 60)    |
 
 **Quick example:**
+
 ```json
 {
   "command": "ls src | where size > 1kb | to json"
@@ -86,6 +88,7 @@ Run a Nushell command. Everything goes through here.
 ```
 
 **Background task:**
+
 ```json
 {
   "command": "cargo watch",
@@ -97,30 +100,31 @@ Run a Nushell command. Everything goes through here.
 
 Grab output from a background process.
 
-| Field   | Type    | Required | Notes                                           |
-| ------- | ------- | -------- | ----------------------------------------------- |
-| `id`    | string  | Yes      | Job ID from `nu.exec`                           |
-| `block` | boolean | No      | Wait for it to finish first (default: false)    |
+| Field   | Type    | Required | Notes                                        |
+| ------- | ------- | -------- | -------------------------------------------- |
+| `id`    | string  | Yes      | Job ID from `nu.exec`                        |
+| `block` | boolean | No       | Wait for it to finish first (default: false) |
 
 ### `nu.kill`
 
 Stop a background process.
 
-| Field | Type   | Required | Notes                  |
-| ----- | ------ | -------- | ---------------------- |
-| `id`  | string | Yes      | Job ID to terminate    |
+| Field | Type   | Required | Notes               |
+| ----- | ------ | -------- | ------------------- |
+| `id`  | string | Yes      | Job ID to terminate |
 
 ### `nu.apply`
 
 Edit files surgically using `// ... existing code ...` markers. Faster and more reliable than traditional file replacement.
 
-| Field         | Type   | Required | Notes                            |
-| ------------- | ------ | -------- | -------------------------------- |
-| `path`        | string | Yes      | Absolute path to the file         |
-| `instructions` | string | Yes      | What you're changing              |
-| `code_edit`   | string | Yes      | The code with markers             |
+| Field          | Type   | Required | Notes                     |
+| -------------- | ------ | -------- | ------------------------- |
+| `path`         | string | Yes      | Absolute path to the file |
+| `instructions` | string | Yes      | What you're changing      |
+| `code_edit`    | string | Yes      | The code with markers     |
 
 **How to use it:**
+
 ```
 instructions: "Add error handling"
 code_edit: |
@@ -138,18 +142,18 @@ code_edit: |
 
 Since this server just passes commands through to Nushell, you can use any Nushell built-in:
 
-| What you want | How to do it                        |
-| ------------- | ----------------------------------- |
-| List files    | `ls`                                |
-| As JSON       | `ls \| to json`                     |
-| Search files  | `ug+ 'pattern' path/`               |
-| Read a file   | `open file.txt`                     |
-| Parse JSON    | `open file.json \| from json`       |
-| System info   | `sys`                               |
-| Processes     | `ps`                                |
-| Change dir    | `cd path/`                          |
-| Make dir      | `mkdir path/`                       |
-| Run stuff     | `cargo build`, `npm test`, etc.     |
+| What you want | How to do it                    |
+| ------------- | ------------------------------- |
+| List files    | `ls`                            |
+| As JSON       | `ls \| to json`                 |
+| Search files  | `ug+ 'pattern' path/`           |
+| Read a file   | `open file.txt`                 |
+| Parse JSON    | `open file.json \| from json`   |
+| System info   | `sys`                           |
+| Processes     | `ps`                            |
+| Change dir    | `cd path/`                      |
+| Make dir      | `mkdir path/`                   |
+| Run stuff     | `cargo build`, `npm test`, etc. |
 
 ## How it's built
 

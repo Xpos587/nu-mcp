@@ -190,7 +190,11 @@ BEHAVIOR: Returns current buffer snapshots. Use `block: true` to wait for proces
         name = "nu.apply",
         description = r#"Surgically edit existing files using the 'Fast Apply' pattern.
 
+CRITICAL: This is a CODE-PATCHING engine. Output ONLY raw code with markers. NO explanations. NO markdown fences. NO conversational text.
+
 NOTE: Requires external API configuration (APPLY_API_KEY, APPLY_API_URL). Use 'ollama' for local.
+
+RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results. Other models may return markdown/conversational responses.
 
 RULES:
 1. Use `// ... existing code ...` markers to represent unchanged blocks.
@@ -198,7 +202,9 @@ RULES:
 3. Preserve exact indentation.
 4. For deletions, show context before/after and omit deleted lines.
 5. Batch multiple edits to the same file in one call.
-6. NEVER rewrite the whole file unless it's very small."#
+6. NEVER rewrite the whole file unless it's very small.
+
+RESPONSE HANDLING: The tool automatically strips markdown code blocks and rejects conversational responses."#
     )]
     pub async fn nu_apply(&self, args: Parameters<NuApplyArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;

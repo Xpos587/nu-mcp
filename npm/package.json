@@ -1,0 +1,37 @@
+{
+  "name": "nu-mcp",
+  "version": "0.1.0",
+  "description": "A lightweight MCP server that gives AI coding agents access to Nushell",
+  "author": "Xpos587",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Xpos587/nu-mcp.git"
+  },
+  "homepage": "https://github.com/Xpos587/nu-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Xpos587/nu-mcp/issues"
+  },
+  "bin": {
+    "nu-mcp": "bin/nu-mcp.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "nushell",
+    "nu",
+    "ai",
+    "claude",
+    "codex"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "binary-install": "^1.0.0"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ]
+}

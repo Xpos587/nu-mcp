@@ -188,27 +188,21 @@ BEHAVIOR: Returns current buffer snapshots. Use `block: true` to wait for proces
     ///   code_edit: "// ... existing code ...\n\nfn new_function() { }\n\n// ... existing code ..."
     #[tool(
         name = "nu.apply",
-        description = r#"Surgically edit files using the 'Fast Apply' pattern.
-This tool MERGES your edit with the existing file.
+        description = r#"Surgically edit existing files using server-side code merge.
+Sends XML-formatted payload: <instruction>{instructions}</instruction><code>{original}</code><update>{edit}</update>
 
-CRITICAL:
-- For large files, DO NOT send the whole file.
-- Use '// ... existing code ...' to represent skipped blocks.
-- If you omit these markers, the tool assumes you want to DELETE everything else.
-- To prevent accidental data loss, edits that result in a file size < 10% of the original will be REJECTED unless markers are present.
+The merge happens server-side using a specialized model. The API returns a complete merged file.
 
-EXAMPLE CODE_EDIT:
-// ... existing code ...
-fn updated_part() {
-  // your change
-}
-// ... existing code ...
-
-Output ONLY raw code and markers.
+RULES:
+- 'instructions': Brief first-person description of what you're changing (e.g. "I am adding error handling").
+- 'code_edit': Only changed lines with "// ... existing code ..." markers for unchanged sections.
+- ALWAYS use markers for unchanged sections (omitting markers causes deletions).
+- Preserve exact indentation.
+- Batch multiple edits to the same file in one call.
 
 NOTE: Requires external API configuration (APPLY_API_KEY, APPLY_API_URL). Use 'ollama' for local.
 
-RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results. Other models may return markdown/conversational responses."#
+RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results."#
     )]
     pub async fn nu_apply(&self, args: Parameters<NuApplyArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;

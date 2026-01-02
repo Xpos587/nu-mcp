@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "nu-mcp": {
+      "command": "/absolute/path/to/nu-mcp/target/release/nu-mcp",
+      "env": {
+        "NU_PATH": "nu",
+        "APPLY_API_URL": "https://api.morphllm.com/v1",
+        "APPLY_API_KEY": "sostrong-api-key",
+        "APPLY_MODEL": "morph-v3-fast"
+      },
+      "tools": ["nu.exec", "nu.output", "nu.kill", "nu.apply"]
+    }
+  }
+}

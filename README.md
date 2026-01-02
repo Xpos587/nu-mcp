@@ -1,51 +1,43 @@
 # nu-mcp
 
-A minimal MCP (Model Context Protocol) server that exposes Nushell shell execution and code editing capabilities to AI coding agents. Built with Rust using the `rmcp` SDK.
+A lightweight MCP server that gives AI coding agents access to a Nushell shell. Instead of bundling dozens of specialized tools, it exposes Nushell's rich command set directly through four simple tools.
 
-**Philosophy:** Consolidation — fewer, more general-purpose tools. Instead of 34+ specialized tools, `nu-mcp` provides just 4 powerful tools that leverage Nushell's rich built-in commands.
+## What it does
 
-## Features
-
-- **Stateful Shell Sessions**: Persistent working directory across commands
-- **Background Processes**: Run long-running tasks (servers, watchers) asynchronously
-- **Active Pipe Draining**: Prevents subprocess hangs by draining stdout/stderr concurrently
-- **Kill-on-Timeout**: Automatically terminates hung processes after timeout
-- **Fast Code Edits**: Surgical file editing via external LLM API (OpenAI-compatible)
+- **Stateful sessions**: Your working directory sticks around between commands
+- **Background tasks**: Run watchers, servers, or build scripts without blocking
+- **Smart pipe handling**: Actively drains stdout/stderr so subprocesses don't hang
+- **Timeout protection**: Kills stuck processes automatically
 
 ## Requirements
 
-- **Rust** 1.70+ (for building)
-- **Nushell** (`nu`) — the shell that powers all command execution
+Just two things:
 
+- **Rust 1.70+** to build
+- **Nushell** (`nu`) to run commands
+
+Install Nushell:
 ```bash
 # macOS
 brew install nushell
 
 # Linux
 cargo install nu
-
-# Verify
-nu --version
 ```
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/graves/awful_mcp
-cd awful_mcp/nu-mcp
-
-# Build release binary
+git clone https://github.com/Xpos587/nu-mcp
+cd nu-mcp
 cargo build --release
-
-# Binary location: target/release/nu-mcp
 ```
+
+The binary ends up at `target/release/nu-mcp`.
 
 ## Setup
 
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `~/.config/Claude/claude_desktop_config.json` (Linux):
+Add this to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `~/.config/Claude/claude_desktop_config.json` on Linux):
 
 ```json
 {
@@ -62,41 +54,38 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-### Environment Variables
+### Environment options
 
-| Variable        | Default                       | Description                      |
-| --------------- | ----------------------------- | -------------------------------- |
-| `NU_PATH`       | `nu`                          | Path to Nushell binary           |
-| `APPLY_API_URL` | `https://api.morphllm.com/v1` | LLM API endpoint for code edits  |
-| `APPLY_API_KEY` | `ollama`                      | API key (use `ollama` for local) |
-| `APPLY_MODEL`   | `morph-v3-fast`               | Model for code edits             |
-| `RUST_LOG`      | `info`                        | Logging level                    |
+| Variable        | Default                       | What it does                          |
+| --------------- | ----------------------------- | ------------------------------------- |
+| `NU_PATH`       | `nu`                          | Path to the Nushell binary            |
+| `APPLY_API_URL` | `https://api.morphllm.com/v1` | LLM endpoint for code editing         |
+| `APPLY_API_KEY` | `ollama`                      | API key (use `ollama` for local LLMs) |
+| `APPLY_MODEL`   | `morph-v3-fast`               | Which model to use for edits          |
+| `RUST_LOG`      | `info`                        | How chatty the logs are               |
 
 ## Tools
 
 ### `nu.exec`
 
-Execute Nushell commands in a persistent session.
+Run a Nushell command. Everything goes through here.
 
-**Arguments:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `command` | string | Yes | Nushell pipeline to execute |
-| `background` | boolean | No | Run in background (default: false) |
-| `cwd` | string | No | Working directory override |
-| `env` | object | No | Environment variables |
-| `timeout` | number | No | Timeout in seconds (default: 60) |
+| Field      | Type    | Required | Notes                              |
+| ---------- | ------- | -------- | ----------------------------------- |
+| `command`  | string  | Yes      | The Nushell pipeline to run         |
+| `background` | boolean | No      | Run asynchronously (default: false) |
+| `cwd`      | string  | No       | Override working directory          |
+| `env`      | object  | No       | Extra environment variables         |
+| `timeout`  | number  | No       | Timeout in seconds (default: 60)    |
 
-**Blocking Example:**
-
+**Quick example:**
 ```json
 {
   "command": "ls src | where size > 1kb | to json"
 }
 ```
 
-**Background Example:**
-
+**Background task:**
 ```json
 {
   "command": "cargo watch",
@@ -106,36 +95,32 @@ Execute Nushell commands in a persistent session.
 
 ### `nu.output`
 
-Retrieve output from a background process.
+Grab output from a background process.
 
-**Arguments:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | string | Yes | Job ID from `nu.exec` |
-| `block` | boolean | No | Wait for completion (default: false) |
+| Field   | Type    | Required | Notes                                           |
+| ------- | ------- | -------- | ----------------------------------------------- |
+| `id`    | string  | Yes      | Job ID from `nu.exec`                           |
+| `block` | boolean | No      | Wait for it to finish first (default: false)    |
 
 ### `nu.kill`
 
-Terminate a background process.
+Stop a background process.
 
-**Arguments:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | string | Yes | Job ID to kill |
+| Field | Type   | Required | Notes                  |
+| ----- | ------ | -------- | ---------------------- |
+| `id`  | string | Yes      | Job ID to terminate    |
 
 ### `nu.apply`
 
-Surgically edit files using the "Fast Apply" pattern with `// ... existing code ...` markers.
+Edit files surgically using `// ... existing code ...` markers. Faster and more reliable than traditional file replacement.
 
-**Arguments:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `path` | string | Yes | Absolute file path |
-| `instructions` | string | Yes | Description of changes |
-| `code_edit` | string | Yes | Code with markers |
+| Field         | Type   | Required | Notes                            |
+| ------------- | ------ | -------- | -------------------------------- |
+| `path`        | string | Yes      | Absolute path to the file         |
+| `instructions` | string | Yes      | What you're changing              |
+| `code_edit`   | string | Yes      | The code with markers             |
 
-**Example:**
-
+**How to use it:**
 ```
 instructions: "Add error handling"
 code_edit: |
@@ -149,55 +134,46 @@ code_edit: |
   // ... existing code ...
 ```
 
-## Nushell Cheat Sheet
+## Nushell basics
 
-Since `nu-mcp` exposes Nushell directly, here are common patterns:
+Since this server just passes commands through to Nushell, you can use any Nushell built-in:
 
-| Task             | Command                       |
-| ---------------- | ----------------------------- |
-| List files       | `ls`                          |
-| List as JSON     | `ls \| to json`               |
-| Search files     | `ug+ 'pattern' path/`         |
-| Read file        | `open file.txt`               |
-| Read JSON        | `open file.json \| from json` |
-| Get system info  | `sys`                         |
-| List processes   | `ps`                          |
-| Change directory | `cd path/`                    |
-| Create directory | `mkdir path/`                 |
-| Run commands     | `cargo build`                 |
+| What you want | How to do it                        |
+| ------------- | ----------------------------------- |
+| List files    | `ls`                                |
+| As JSON       | `ls \| to json`                     |
+| Search files  | `ug+ 'pattern' path/`               |
+| Read a file   | `open file.txt`                     |
+| Parse JSON    | `open file.json \| from json`       |
+| System info   | `sys`                               |
+| Processes     | `ps`                                |
+| Change dir    | `cd path/`                          |
+| Make dir      | `mkdir path/`                       |
+| Run stuff     | `cargo build`, `npm test`, etc.     |
 
-## Architecture
+## How it's built
 
 ```
 src/
-├── main.rs    — MCP server setup, tool handlers
-├── exec.rs    — Command execution, background processes
-└── state.rs   — Global state, CWD tracking, process registry
+├── main.rs    — MCP server, tool handlers
+├── exec.rs    — Command execution, background jobs
+└── state.rs   — CWD tracking, process registry
 ```
 
-**Key Design Decisions:**
+**Design choices:**
 
-1. **Consolidation**: 4 tools instead of 30+. Nushell has 100+ built-in commands.
-2. **Stateful CWD**: Directory persists across commands (like a real shell).
-3. **Active Draining**: Prevents pipe buffer deadlocks.
-4. **Kill-on-Timeout**: No zombie processes.
+1. **Fewer tools** — Four tools instead of dozens. Nushell already has the commands you need.
+2. **Persistent CWD** — The working directory stays where you left it, like a real shell.
+3. **Active draining** — Reads stdout/stderr concurrently so pipes don't block.
+4. **Kill-on-timeout** — No zombie processes left behind.
 
 ## Development
 
 ```bash
-# Build
 cargo build --release
-
-# Run with logging
 RUST_LOG=debug cargo run
-
-# Format
 cargo fmt
-
-# Lint
 cargo clippy
-
-# Test
 cargo test
 ```
 

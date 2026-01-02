@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Rust MCP server exposing Nushell-compatible terminal commands for coding agents"
-repository = "https://github.com/graves/awful_mcp"
+repository = "https://github.com/Xpos587/nu-mcp"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
@@ -21,3 +21,4 @@ glob = "0.3"
 time = { version = "0.3", features = ["formatting"] }
 reqwest = { version = "0.12", features = ["json"] }
 nanoid = "0.4"
+

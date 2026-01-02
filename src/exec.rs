@@ -372,8 +372,9 @@ impl NuExecutor {
             warn!("Using non-Fast-Apply model '{}' may cause corruption. Consider using 'morph-v3-fast'.", model);
         }
 
-        // Construct the content for Fast Apply
-        let content = format!("{}\n{}\n{}", instructions, initial_code, code_edit);
+        // Construct the content for Fast Apply (canonical Morph SDK XML format)
+        // Format: <instruction>{instructions}</instruction>\n<code>{original}</code>\n<update>{edit}</update>
+        let content = format!("<instruction>{}</instruction>\n<code>{}</code>\n<update>{}</update>", instructions, initial_code, code_edit);
 
         // Call OpenAI-compatible API
         let url = format!("{}/chat/completions", api_url.trim_end_matches('/'));
@@ -414,17 +415,30 @@ impl NuExecutor {
             anyhow::bail!("Sanitized response is empty - refusing to overwrite file");
         }
 
+        // Atomic backup system: create .bak file before writing
+        let backup_path = format!("{}.bak", path);
+        fs::copy(&path_obj, &backup_path).await
+            .map_err(|e| anyhow::anyhow!("Failed to create backup at {}: {}", backup_path, e))?;
+
         // Write sanitized result back to file
-        fs::write(&path_obj, &sanitized).await
-            .map_err(|e| anyhow::anyhow!("Failed to write file {}: {}", path, e))?;
+        let write_result = fs::write(&path_obj, &sanitized).await;
 
-        info!("Successfully applied edit to {} ({} -> {} chars)", path, original_len, sanitized.len());
-
-        Ok(NuApplyResult {
-            path: path.to_string(),
-            status: "applied".to_string(),
-            message: format!("Code edit applied to {}", path),
-        })
+        match write_result {
+            Ok(_) => {
+                // Success - remove the backup
+                let _ = fs::remove_file(&backup_path).await;
+                info!("Successfully applied edit to {} ({} -> {} chars)", path, original_len, sanitized.len());
+                Ok(NuApplyResult {
+                    path: path.to_string(),
+                    status: "applied".to_string(),
+                    message: format!("Code edit applied to {}", path),
+                })
+            }
+            Err(e) => {
+                // Write failed - report backup location
+                Err(anyhow::anyhow!("Failed to write file {}: {}. Backup available at: {}", path, e, backup_path))
+            }
+        }
     }
 }
 

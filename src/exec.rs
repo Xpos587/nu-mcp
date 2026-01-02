@@ -677,7 +677,7 @@ fn sanitize_response(response: &str, original_len: usize) -> anyhow::Result<Stri
     // Validate output length is reasonable (not severely truncated)
     // Allow up to 90% reduction for deletions, but not more
     if !sanitized.is_empty() && sanitized.len() < original_len / 10 {
-        anyhow::bail!("Output appears severely truncated: {} chars vs {} original",
+        anyhow::bail!("Truncation Guard: The resulting file is too small ({} chars vs {} original). If this is a partial edit, you MUST include '// ... existing code ...' markers to indicate skipped sections. If you intended a full rewrite, ensure the content is complete.",
                       sanitized.len(), original_len);
     }
 

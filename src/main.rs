@@ -188,23 +188,27 @@ BEHAVIOR: Returns current buffer snapshots. Use `block: true` to wait for proces
     ///   code_edit: "// ... existing code ...\n\nfn new_function() { }\n\n// ... existing code ..."
     #[tool(
         name = "nu.apply",
-        description = r#"Surgically edit existing files using the 'Fast Apply' pattern.
+        description = r#"Surgically edit files using the 'Fast Apply' pattern.
+This tool MERGES your edit with the existing file.
 
-CRITICAL: This is a CODE-PATCHING engine. Output ONLY raw code with markers. NO explanations. NO markdown fences. NO conversational text.
+CRITICAL:
+- For large files, DO NOT send the whole file.
+- Use '// ... existing code ...' to represent skipped blocks.
+- If you omit these markers, the tool assumes you want to DELETE everything else.
+- To prevent accidental data loss, edits that result in a file size < 10% of the original will be REJECTED unless markers are present.
+
+EXAMPLE CODE_EDIT:
+// ... existing code ...
+fn updated_part() {
+  // your change
+}
+// ... existing code ...
+
+Output ONLY raw code and markers.
 
 NOTE: Requires external API configuration (APPLY_API_KEY, APPLY_API_URL). Use 'ollama' for local.
 
-RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results. Other models may return markdown/conversational responses.
-
-RULES:
-1. Use `// ... existing code ...` markers to represent unchanged blocks.
-2. Include minimal context around edits for disambiguation.
-3. Preserve exact indentation.
-4. For deletions, show context before/after and omit deleted lines.
-5. Batch multiple edits to the same file in one call.
-6. NEVER rewrite the whole file unless it's very small.
-
-RESPONSE HANDLING: The tool automatically strips markdown code blocks and rejects conversational responses."#
+RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results. Other models may return markdown/conversational responses."#
     )]
     pub async fn nu_apply(&self, args: Parameters<NuApplyArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;

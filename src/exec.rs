@@ -37,9 +37,6 @@ pub struct NuExecArgs {
 pub struct NuOutputArgs {
     /// The job ID returned by a background `nu.exec` call.
     pub id: String,
-    /// If true, waits for the process to exit before returning final logs (max 5 minutes).
-    #[serde(default)]
-    pub block: Option<bool>,
 }
 
 /// NuKill tool arguments
@@ -58,6 +55,48 @@ pub struct NuApplyArgs {
     pub instructions: String,
     /// The partial code with `// ... existing code ...` markers.
     pub code_edit: String,
+}
+
+/// NuSearch tool arguments
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct NuSearchArgs {
+    /// Search query string.
+    pub query: String,
+    /// Search category: general, cargo, packages, it, repos, skills, etc. (default: general).
+    #[serde(default)]
+    pub category: String,
+    /// Maximum number of results to return (default: 10).
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Specific engines to use (comma-separated, e.g., "npm,pypi").
+    pub engines: Option<String>,
+}
+
+/// NuFetch tool arguments
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct NuFetchArgs {
+    /// URL to fetch.
+    pub url: String,
+    /// Response format: auto (default), json, markdown, text.
+    #[serde(default)]
+    pub format: Option<String>,
+    /// HTTP headers as key-value pairs (optional).
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    /// Request timeout in seconds (default: 30).
+    #[serde(default)]
+    pub timeout: Option<u64>,
+}
+
+/// NuFetch result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NuFetchResult {
+    pub url: String,
+    pub status: u16,
+    pub content_type: String,
+    pub content: String,
+    pub format: String,
+    pub error: Option<String>,
 }
 
 /// Nushell executor
@@ -262,39 +301,12 @@ impl NuExecutor {
         })
     }
 
-    /// Read output from background process
+    /// Read output from background process (returns current snapshot immediately)
     pub async fn read_output(
         &self,
         state: &AppState,
         id: &str,
-        block: bool,
     ) -> anyhow::Result<NuOutputResult> {
-        // If block=true, wait for process to complete
-        if block {
-            // Wait up to 5 minutes for process completion
-            let start = std::time::Instant::now();
-            while start.elapsed() < Duration::from_secs(300) {
-                if let Some(snapshot) = state.get_process(id).await {
-                    if snapshot.status != ProcessStatus::Running {
-                        // Process completed
-                        return Ok(NuOutputResult {
-                            id: snapshot.id,
-                            status: format!("{:?}", snapshot.status).to_lowercase(),
-                            stdout: snapshot.stdout,
-                            stderr: snapshot.stderr,
-                            exit_code: snapshot.exit_code,
-                            took_secs: snapshot.started_at_secs,
-                        });
-                    }
-                } else {
-                    return Err(anyhow::anyhow!("Process {} not found", id));
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            // Timeout - return current state
-        }
-
-        // Non-blocking: return current snapshot
         match state.get_process(id).await {
             Some(snapshot) => Ok(NuOutputResult {
                 id: snapshot.id,
@@ -440,6 +452,181 @@ impl NuExecutor {
             }
         }
     }
+
+    /// Search using SearXNG instance
+    pub async fn search(&self, args: &NuSearchArgs) -> anyhow::Result<NuSearchResult> {
+        let searx_url = std::env::var("SEARXNG_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8888".to_string());
+
+        let limit = args.limit.unwrap_or(10);
+        let category = if args.category.is_empty() { "general".to_string() } else { args.category.clone() };
+
+        // Build URL with query parameters
+        let mut url = format!(
+            "{}/search?q={}&format=json",
+            searx_url.trim_end_matches('/'),
+            urlencoding::encode(&args.query)
+        );
+
+        if category != "general" {
+            url = format!("{}&categories={}", url, category);
+        }
+
+        if let Some(ref engines) = args.engines {
+            url = format!("{}&engines={}", url, engines);
+        }
+
+        debug!("Searching SearXNG: {}", url);
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("SearXNG request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("SearXNG returned error: {}", response.status());
+        }
+
+        let api_response: serde_json::Value = response.json().await
+            .map_err(|e| anyhow::anyhow!("Failed to parse SearXNG response: {}", e))?;
+
+        let results = api_response["results"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("Invalid SearXNG response: missing results"))?;
+
+        let total = api_response["number_of_results"]
+            .as_u64()
+            .unwrap_or(0) as usize;
+
+        // Take only the requested limit
+        let limited_results: Vec<SearchResultItem> = results
+            .iter()
+            .take(limit)
+            .filter_map(|r| {
+                Some(SearchResultItem {
+                    title: r["title"].as_str()?.to_string(),
+                    url: r["url"].as_str()?.to_string(),
+                    content: r["content"].as_str().unwrap_or("").to_string(),
+                    engine: r["engine"].as_str().unwrap_or("unknown").to_string(),
+                    category: r["category"].as_str().unwrap_or(&category).to_string(),
+                })
+            })
+            .collect();
+
+        Ok(NuSearchResult {
+            query: args.query.clone(),
+            results: limited_results.clone(),
+            total,
+            returned: limited_results.len(),
+            answers: api_response["answers"].as_array().cloned().unwrap_or_default(),
+            infoboxes: api_response["infoboxes"].as_array().cloned().unwrap_or_default(),
+            suggestions: api_response["suggestions"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect(),
+        })
+    }
+
+    /// Fetch web content with browser-like headers and format conversion
+    pub async fn fetch(&self, args: &NuFetchArgs) -> anyhow::Result<NuFetchResult> {
+        let format = args.format.as_ref().map(|s| s.as_str()).unwrap_or("auto");
+        let timeout_sec = args.timeout.unwrap_or(30);
+
+        debug!("Fetching URL: {} with format: {}", args.url, format);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_sec))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {}", e))?;
+
+        let mut request = client.get(&args.url);
+
+        // Add custom headers if provided
+        if let Some(ref headers_map) = args.headers {
+            for (key, value) in headers_map {
+                request = request.header(key, value);
+            }
+        }
+
+        // Add browser-like User-Agent if not custom provided
+        if args.headers.is_none() || !args.headers.as_ref().unwrap().contains_key("User-Agent") {
+            request = request.header(
+                reqwest::header::USER_AGENT,
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            );
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {}", e))?;
+
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
+
+        let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+        // Determine and apply format conversion
+        let (content, final_format) = match format {
+            "auto" => {
+                // Auto-detect format based on content-type
+                if content_type.contains("json") {
+                    (body_str.clone(), "json".to_string())
+                } else if content_type.contains("html") {
+                    let markdown = html2md::parse_html(&body_str);
+                    (markdown, "markdown".to_string())
+                } else {
+                    (body_str.clone(), "text".to_string())
+                }
+            }
+            "json" => {
+                // Return as-is (assume JSON)
+                (body_str.clone(), "json".to_string())
+            }
+            "markdown" => {
+                if content_type.contains("html") {
+                    let markdown = html2md::parse_html(&body_str);
+                    (markdown, "markdown".to_string())
+                } else {
+                    // Not HTML, return as text with note
+                    (format!("<!-- Content is not HTML, returning as text -->\n\n{}", body_str), "text".to_string())
+                }
+            }
+            "text" => {
+                (body_str.clone(), "text".to_string())
+            }
+            _ => {
+                return Err(anyhow::anyhow!("Unknown format: {}", format));
+            }
+        };
+
+        Ok(NuFetchResult {
+            url: args.url.clone(),
+            status,
+            content_type,
+            content,
+            format: final_format,
+            error: if status >= 400 {
+                Some(format!("HTTP {} error", status))
+            } else {
+                None
+            },
+        })
+    }
 }
 
 /// Monitor background process and actively drain pipes into buffers
@@ -574,6 +761,26 @@ pub struct NuApplyResult {
     pub path: String,
     pub status: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NuSearchResult {
+    pub query: String,
+    pub results: Vec<SearchResultItem>,
+    pub total: usize,
+    pub returned: usize,
+    pub answers: Vec<serde_json::Value>,
+    pub infoboxes: Vec<serde_json::Value>,
+    pub suggestions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultItem {
+    pub title: String,
+    pub url: String,
+    pub content: String,
+    pub engine: String,
+    pub category: String,
 }
 
 /// Extract code content from markdown-wrapped API responses

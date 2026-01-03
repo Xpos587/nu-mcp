@@ -11,12 +11,12 @@ use rmcp::{
     ErrorData as McpError, ServiceExt,
 };
 use std::collections::HashMap;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod exec;
 mod state;
 
-use exec::{NuApplyArgs, NuExecArgs, NuExecutor, NuKillArgs, NuOutputArgs};
+use exec::{NuApplyArgs, NuExecArgs, NuExecutor, NuFetchArgs, NuKillArgs, NuOutputArgs, NuSearchArgs};
 use state::AppState;
 
 #[derive(Clone)]
@@ -65,19 +65,74 @@ impl NuServer {
     ///   "open package.json | from json"
     #[tool(
         name = "nu.exec",
-        description = r#"Executes a Nushell command or pipeline in a persistent session.
+        description = r#"Execute Nushell commands with structured data pipelines. Nushell treats data as tables/records, not text.
 
-IMPORTANT: Use this for terminal operations (git, cargo, docker, etc.) and data inspection.
+BASIC SYNTAX:
+- Variables: `$name`, `$env.PATH`
+- String interpolation: $"hello ($name)"
+- Ranges: `1..10`, `1..2..10` (step by 2)
+- Lists: `[1 2 3]`, records: `{a: 1, b: 2}`
 
-STRATEGY: Prefer native Nushell commands (ls, ps, open) piped to `to json` for structured output.
+FILE OPERATIONS (native):
+- List: `ls`, `ls *.txt`, `ls | where type == file`
+- Read: `open file.txt`, `open data.json`, `open config.toml`
+- Write: `"content" | save file.txt`, `data | to json | save out.json`
+- Move/copy/remove: `mv old.txt new.txt`, `cp src dst`, `rm file.txt`
+- Mkdir: `mkdir dir` (creates parents by default, no -p flag)
 
-OUTPUT: Nushell commands return objects. To see output in stdout, pipe to `print`. Example: `ls | print` or `sys | to json | print`.
+PIPELINE OPERATIONS:
+- Filter: `ls | where size > 1mb`, `ls | where name =~ "test"`
+- Select: `ls | select name size`, `ls | get name`
+- Sort: `ls | sort-by size | reverse`
+- Transform: `ls | update size { $it.size / 1000 }`
+- Aggregate: `ls | length`, `[1 2 3] | math sum`
 
-WARNING: Avoid searching in 'target/', '.git/', or '.cache/' directories as they cause timeouts and encoding errors. Always use `--exclude-dir` with `ug+`. Avoid piping giant search results directly to `from json` - use `| take 50` BEFORE `| to json`. If a command times out, immediately search in a specific subdirectory instead.
+STRUCTURED DATA:
+- JSON: `open data.json | get users | where age > 25`
+- CSV: `open data.csv | where active == true | to json`
+- Convert: `open data.txt | from json | to csv | save out.csv`
+- HTTP: `http get https://api.example.com/users`
 
-SAFETY: Always quote file paths with spaces. Nushell `mkdir` creates parents by default (no `-p` flag).
+STRINGS:
+- Case: `"hello" | str upcase`, `"HELLO" | str downcase`
+- Trim: `"  text  " | str trim`
+- Replace: `"hello world" | str replace "world" "nu"`
+- Contains: `"hello" | str contains "ell"` (returns boolean)
+- Split: `"a,b,c" | split row ","`
 
-DO NOT use `cat`, `grep`, `sed`, or `awk` - use Nushell pipelines or `nu.apply` instead."#
+CONDITIONALS:
+- if/else: `if $age > 18 { "adult" } else { "minor" }`
+- match: `match $val { 1 => "one", 2 => "two", _ => "other" }`
+
+LOOPS:
+- For: `for x in 1..5 { print $x }`
+- While: `mut i = 0; while $i < 5 { print $i; $i += 1 }`
+- Each: `[1 2 3] | each { |x| $x * 2 }`
+
+EXTERNAL COMMANDS:
+- Prefix with `^`: `^git status`, `^cargo build`
+- Capture output: `let out = (^git status | complete)
+
+AVOID BASHISMS - use Nushell native:
+- Instead of `cat`: use `open`
+- Instead of `grep`: use `where` with string operations
+- Instead of `sed/awk`: use `str replace`, `update`, `select`
+- Instead of `find`: use `ls` with filters
+- Instead of `&&`: use `;` for chaining
+- Instead of `|`: use `|` (same, but data is structured)
+- Instead of `$VAR`: use `$env.VAR` or `$var`
+- Instead of `$(cmd)`: use `(cmd)` or `^cmd`
+
+OUTPUT FORMATTING:
+- To see stdout: pipe to `print` → `ls | print`
+- To get JSON: pipe to `to json` → `ls | to json | print`
+- Truncate large output: `ls | take 50 | to json`
+
+WARNING:
+- Avoid searching in 'target/', '.git/', '.cache/' (timeouts/encoding errors)
+- Use `| take N BEFORE | to json` for large results
+- If command times out, search in specific subdirectory instead
+- Quote file paths with spaces: `"my path/file.txt""#
     )]
     pub async fn nu_exec(&self, args: Parameters<NuExecArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;
@@ -117,7 +172,6 @@ DO NOT use `cat`, `grep`, `sed`, or `awk` - use Nushell pipelines or `nu.apply` 
     ///
     /// Args:
     ///   id: Job ID from NuExec
-    ///   block: If true, wait for process to complete (optional, default false)
     ///
     /// Returns:
     ///   {id, status, stdout?, stderr?, exit_code?, took_secs?}
@@ -125,14 +179,13 @@ DO NOT use `cat`, `grep`, `sed`, or `awk` - use Nushell pipelines or `nu.apply` 
         name = "nu.output",
         description = r#"Retrieves stdout/stderr from a running or completed background process started via `nu.exec`.
 
-BEHAVIOR: Returns current buffer snapshots. Use `block: true` to wait for process completion (max 5 min)."#
+Returns current buffer snapshot immediately."#
     )]
     pub async fn nu_output(&self, args: Parameters<NuOutputArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;
-        let block = args.block.unwrap_or(false);
 
         let result = self.executor
-            .read_output(&self.state, &args.id, block)
+            .read_output(&self.state, &args.id)
             .await
             .map_err(|e| McpError::invalid_request(format!("read_output failed: {e}"), None))?;
 
@@ -188,21 +241,23 @@ BEHAVIOR: Returns current buffer snapshots. Use `block: true` to wait for proces
     ///   code_edit: "// ... existing code ...\n\nfn new_function() { }\n\n// ... existing code ..."
     #[tool(
         name = "nu.apply",
-        description = r#"Surgically edit existing files using server-side code merge.
-Sends XML-formatted payload: <instruction>{instructions}</instruction><code>{original}</code><update>{edit}</update>
+        description = r#"Use this tool to edit existing files by showing only the changed lines.
 
-The merge happens server-side using a specialized model. The API returns a complete merged file.
+Use "// ... existing code ..." to represent unchanged code blocks. Include just enough surrounding context to locate each edit precisely.
 
-RULES:
-- 'instructions': Brief first-person description of what you're changing (e.g. "I am adding error handling").
-- 'code_edit': Only changed lines with "// ... existing code ..." markers for unchanged sections.
-- ALWAYS use markers for unchanged sections (omitting markers causes deletions).
-- Preserve exact indentation.
-- Batch multiple edits to the same file in one call.
+Example format:
+// ... existing code ...
+FIRST_EDIT
+// ... existing code ...
+SECOND_EDIT
+// ... existing code ...
 
-NOTE: Requires external API configuration (APPLY_API_KEY, APPLY_API_URL). Use 'ollama' for local.
-
-RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results."#
+Rules:
+- ALWAYS use "// ... existing code ..." for unchanged sections (omitting this marker will cause deletions)
+- Include minimal context around edits for disambiguation
+- Preserve exact indentation
+- For deletions: show context before and after, omit the deleted lines
+- Batch multiple edits to the same file in one call"#
     )]
     pub async fn nu_apply(&self, args: Parameters<NuApplyArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;
@@ -215,11 +270,178 @@ RECOMMENDED: Use APPLY_MODEL=morph-v3-fast for best results."#
         let json = serde_json::to_value(&result).unwrap();
         Ok(CallToolResult::success(vec![Content::json(json)?]))
     }
+
+    /// NuSearch - Search using SearXNG instance
+    ///
+    /// Use this tool to search the web, package repositories, and code repositories.
+    ///
+    /// NOTE: Requires SearXNG instance running (default: http://127.0.0.1:8888).
+    /// Configure via SEARXNG_URL environment variable.
+    ///
+    /// Args:
+    ///   query: Search query
+    ///   category: Search category (general, cargo, packages, it, repos, skills, etc.)
+    ///   limit: Max results to return (default: 10)
+    ///   engines: Specific engines to use (e.g., "npm,pypi")
+    ///
+    /// Returns:
+    ///   {query, results: [{title, url, content, engine, category}], total, returned, answers, infoboxes, suggestions}
+    ///
+    /// Examples:
+    ///   query: "tokio" category: "cargo" -> Search Rust crates
+    ///   query: "express" engines: "npm" -> Search npm packages only
+    ///   query: "requests" engines: "pypi" -> Search PyPI packages
+    ///   query: "machine learning" category: "repos" -> Search code repositories
+    ///   query: "rust async" category: "it" -> Search IT/tech resources
+    #[tool(
+        name = "nu.search",
+        description = r#"Search web, package repositories, and code using SearXNG metasearch engine. Returns structured JSON with results from multiple engines.
+
+CATEGORIES (use for broad search scope):
+- general: Web search (default)
+- cargo: Rust crates from crates.io
+- packages: Multi-repo package search (npm, PyPI, rubygems, hackage, hex, packagist, metacpan, pub.dev, go, docker, alpine)
+- it: IT/tech resources (GitHub, Docker Hub, crates.io, Stack Overflow, Wikitech)
+- repos: Code repositories (GitHub, GitLab, Gitea, Codeberg, Bitbucket)
+- code: Code search
+- skills: Claude Code Agent Skills
+- science: Scientific publications
+- news: News articles
+- videos, images, music, books, files: Media-specific search
+
+ENGINES (use for specific sources, comma-separated):
+- Web: duckduckgo, google, bing, startpage, brave
+- Packages: npm, pypi, crates.io, rubygems, hackage, hex, packagist, metacpan, pub.dev, go, docker, alpine
+- Repos: github, gitlab, gitea, codeberg, bitbucket
+- IT: stackoverflow, wikitech, github, docker hub
+
+WHEN TO USE category vs engines:
+- Use category for broad search across multiple engines in a domain
+- Use engines when you need results from specific sources only
+- Example: category="packages" searches ALL package repos; engines="npm,pypi" searches only npm and PyPI
+
+USAGE EXAMPLES:
+1. Search Rust crates: query="tokio" category="cargo"
+2. Search npm only: query="express" engines="npm"
+3. Search PyPI only: query="requests" engines="pypi"
+4. GitHub repos: query="machine learning" category="repos"
+5. IT/tech: query="rust async" category="it"
+6. General web: query="latest rust news" category="general"
+7. Multi-package: query="http client" category="packages"
+8. Multiple engines: query="web framework" engines="npm,crate,composer"
+
+RESPONSE STRUCTURE:
+- query: The search query
+- results: Array of {title, url, content, engine, category, score}
+- total: Total results available
+- returned: Number of results returned
+- answers: Direct answers/infoboxes from SearXNG (e.g., calculators, conversions)
+- infoboxes: Knowledge panels with structured information
+- suggestions: Search query suggestions
+
+ANSWERS/INFOBOXES:
+- SearXNG returns direct answers for factual queries
+- Examples: "capital of france", "2+2", "python version"
+- Check answers and infoboxes fields for instant results
+
+KNOWN ISSUES:
+- Cargo category sometimes returns empty: Try category="packages" or category="it" (also includes crates.io)
+- PyPI search takes 1-2 seconds: Loading package index from Simple API
+- Rate limiting: SearXNG may rate-limit if too many requests in quick succession
+- Some engines may be unresponsive: Check unresponsive_engines in response
+
+ARGS:
+- query: Search query string (required)
+- category: Search category (default: general)
+- limit: Max results to return (default: 10)
+- engines: Specific engines to use (comma-separated, e.g., "npm,pypi")"#
+    )]
+    pub async fn nu_search(&self, args: Parameters<NuSearchArgs>) -> Result<CallToolResult, McpError> {
+        let args = &args.0;
+
+        let result = self.executor
+            .search(args)
+            .await
+            .map_err(|e| McpError::invalid_request(format!("search failed: {e}"), None))?;
+
+        let json = serde_json::to_value(&result).unwrap();
+        Ok(CallToolResult::success(vec![Content::json(json)?]))
+    }
+
+    /// NuFetch - Fetch web content with format conversion
+    ///
+    /// Use this to fetch and convert web content (HTML to Markdown, JSON as-is, etc.).
+    ///
+    /// Args:
+    ///   url: URL to fetch
+    ///   format: Response format (auto/json/markdown/text, default: auto)
+    ///   headers: Optional HTTP headers as key-value pairs
+    ///   timeout: Request timeout in seconds (default: 30)
+    ///
+    /// Returns:
+    ///   {url, status, content_type, content, format, error?}
+    ///
+    /// Examples:
+    ///   url: "https://example.com" format: "markdown" -> Fetch HTML and convert to Markdown
+    ///   url: "https://api.example.com/data.json" format: "json" -> Fetch JSON API
+    ///   url: "https://httpbin.org/headers" headers: {"Accept": "application/json"}
+    #[tool(
+        name = "nu.fetch",
+        description = r#"Fetch web content with browser-like headers and format conversion.
+
+FORMAT OPTIONS:
+- auto: Auto-detect based on content-type (default)
+  - JSON content-type → returns as JSON string
+  - HTML content-type → converts to Markdown
+  - Other → returns as text
+- json: Returns raw JSON string (no parsing)
+- markdown: Converts HTML to Markdown (adds note if not HTML)
+- text: Returns raw text content
+
+BROWSER FINGERPRINTING:
+- Automatically adds Chrome-like User-Agent header
+- Mimics real browser to avoid bot detection
+- Override with custom headers if needed
+
+USAGE EXAMPLES:
+1. Fetch webpage as Markdown: url="https://example.com" format="markdown"
+2. Fetch JSON API: url="https://api.github.com/users/octocat" format="json"
+3. Auto-detect format: url="https://example.com/api/data" format="auto"
+4. Custom headers: url="https://httpbin.org/headers" headers={"Authorization": "Bearer token"}
+5. Raw text: url="https://example.com" format="text"
+
+RESPONSE STRUCTURE:
+- url: The fetched URL
+- status: HTTP status code (200, 404, etc.)
+- content_type: Response content-type header
+- content: Response content (converted based on format)
+- format: Actual format returned (json/markdown/text)
+- error: Error message if status >= 400, null otherwise
+
+NOTES:
+- HTML to Markdown conversion uses html2md library
+- For JSON APIs, content is returned as string (parse with | from json in Nushell)
+- Timeout prevents hanging on slow responses (default: 30 seconds)
+- Custom User-Agent can be provided via headers to override default"#
+    )]
+    pub async fn nu_fetch(&self, args: Parameters<NuFetchArgs>) -> Result<CallToolResult, McpError> {
+        let args = &args.0;
+
+        let result = self.executor
+            .fetch(args)
+            .await
+            .map_err(|e| McpError::invalid_request(format!("fetch failed: {e}"), None))?;
+
+        let json = serde_json::to_value(&result).unwrap();
+        Ok(CallToolResult::success(vec![Content::json(json)?]))
+    }
 }
 
 #[tool_handler]
 impl rmcp::ServerHandler for NuServer {
     fn get_info(&self) -> ServerInfo {
+        let instructions = "Nushell execution server with 6 tools: nu.exec (run commands), nu.output (read bg process output), nu.kill (kill bg process), nu.apply (fast code edits), nu.search (web/packages search), nu.fetch (fetch web content).";
+
         ServerInfo {
             protocol_version: rmcp::model::ProtocolVersion::V_2024_11_05,
             server_info: rmcp::model::Implementation {
@@ -230,9 +452,7 @@ impl rmcp::ServerHandler for NuServer {
                 website_url: None,
             },
             capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
-                "Nushell execution server with 4 tools: nu.exec (run commands), nu.output (read bg process output), nu.kill (kill bg process), nu.apply (fast code edits).".to_string(),
-            ),
+            instructions: Some(instructions.to_string()),
         }
     }
 }
@@ -247,7 +467,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    let service = NuServer::new()
+    let server = NuServer::new();
+
+    let service = server
         .serve(stdio())
         .await
         .inspect_err(|e| error!("Error starting server: {}", e))?;

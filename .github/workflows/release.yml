@@ -19,18 +19,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: nu-mcp
             asset_name: nu-mcp-linux-x64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: nu-mcp
-            asset_name: nu-mcp-linux-arm64
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: nu-mcp
             asset_name: nu-mcp-macos-x64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: nu-mcp
-            asset_name: nu-mcp-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: nu-mcp.exe
@@ -44,12 +36,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross-compilation tools (ARM Linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
         run: |

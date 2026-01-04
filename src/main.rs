@@ -122,14 +122,16 @@ AVOID BASHISMS - use Nushell native:
 - Instead of `|`: use `|` (same, but data is structured)
 - Instead of `$VAR`: use `$env.VAR` or `$var`
 - Instead of `$(cmd)`: use `(cmd)` or `^cmd`
+- Instead of `sort | uniq`: use `lines | uniq` for text, or just `uniq` for lists
 
 OUTPUT FORMATTING:
 - To see stdout: pipe to `print` → `ls | print`
 - To get JSON: pipe to `to json` → `ls | to json | print`
+- To CSV: pipe to `to csv` → `ls | to csv`
 - Truncate large output: `ls | take 50 | to json`
 
 WARNING:
-- Avoid searching in 'target/', '.git/', '.cache/' (timeouts/encoding errors)
+- Avoid searching in 'target/', '.git/', '.cache/', 'node_modules/', '.venv/' (timeouts/encoding errors)
 - Use `| take N BEFORE | to json` for large results
 - If command times out, search in specific subdirectory instead
 - Quote file paths with spaces: `"my path/file.txt""#

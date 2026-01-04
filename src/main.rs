@@ -11,7 +11,7 @@ use rmcp::{
     ErrorData as McpError, ServiceExt,
 };
 use std::collections::HashMap;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 mod exec;
 mod state;
@@ -56,7 +56,7 @@ impl NuServer {
     ///   timeout: Timeout in seconds (optional, default 60)
     ///
     /// Returns:
-    ///   blocking: {exit_code, stdout, stderr, took_ms, success}
+    ///   blocking: {exit_code, output, took_ms, success}
     ///   background: {id, status, message}
     ///
     /// Examples:
@@ -153,17 +153,23 @@ WARNING:
                 .exec_background(&state, &args.command, &env)
                 .await
                 .map_err(|e| McpError::invalid_request(format!("exec_background failed: {e}"), None))?;
-            serde_json::to_value(&bg_result).unwrap()
+
+            format!("Background process started.\nID: {}\nStatus: {}\n{}", bg_result.id, bg_result.status, bg_result.message)
         } else {
             let timeout = self.executor.resolve_timeout(args.timeout);
             let exec_result = self.executor
                 .exec_blocking(&state, &args.command, &env, timeout)
                 .await
                 .map_err(|e| McpError::invalid_request(format!("exec_blocking failed: {e}"), None))?;
-            serde_json::to_value(&exec_result).unwrap()
+
+            format!("Exit code: {}\nTime: {}ms\n\n{}",
+                exec_result.exit_code,
+                exec_result.took_ms,
+                exec_result.output
+            )
         };
 
-        Ok(CallToolResult::success(vec![Content::json(result)?]))
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// NuOutput - Read output from background process
@@ -174,12 +180,12 @@ WARNING:
     ///   id: Job ID from NuExec
     ///
     /// Returns:
-    ///   {id, status, stdout?, stderr?, exit_code?, took_secs?}
+    ///   {id, status, output, exit_code?, took_secs?}
     #[tool(
         name = "nu.output",
-        description = r#"Retrieves stdout/stderr from a running or completed background process started via `nu.exec`.
+        description = r#"Retrieves output from a running or completed background process started via `nu.exec`.
 
-Returns current buffer snapshot immediately."#
+Returns current buffer snapshot immediately. Output includes stdout with stderr appended (marked with [stderr] if present)."#
     )]
     pub async fn nu_output(&self, args: Parameters<NuOutputArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;
@@ -189,8 +195,15 @@ Returns current buffer snapshot immediately."#
             .await
             .map_err(|e| McpError::invalid_request(format!("read_output failed: {e}"), None))?;
 
-        let json = serde_json::to_value(&result).unwrap();
-        Ok(CallToolResult::success(vec![Content::json(json)?]))
+        let text = format!("ID: {}\nStatus: {}\nRunning for: {}s\nExit code: {}\n\n{}",
+            result.id,
+            result.status,
+            result.took_secs,
+            result.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "running".to_string()),
+            result.output
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     /// NuKill - Kill a background process
@@ -214,8 +227,8 @@ Returns current buffer snapshot immediately."#
             .await
             .map_err(|e| McpError::invalid_request(format!("kill_process failed: {e}"), None))?;
 
-        let json = serde_json::to_value(&result).unwrap();
-        Ok(CallToolResult::success(vec![Content::json(json)?]))
+        let text = format!("ID: {}\nStatus: {}\nCommand: {}", result.id, result.status, result.command);
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     /// NuApply - Apply code edits via OpenAI-compatible API
@@ -267,8 +280,8 @@ Rules:
             .await
             .map_err(|e| McpError::invalid_request(format!("apply_file failed: {e}"), None))?;
 
-        let json = serde_json::to_value(&result).unwrap();
-        Ok(CallToolResult::success(vec![Content::json(json)?]))
+        let text = format!("Path: {}\nStatus: {}\n{}", result.path, result.status, result.message);
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     /// NuSearch - Search using SearXNG instance
@@ -364,8 +377,52 @@ ARGS:
             .await
             .map_err(|e| McpError::invalid_request(format!("search failed: {e}"), None))?;
 
-        let json = serde_json::to_value(&result).unwrap();
-        Ok(CallToolResult::success(vec![Content::json(json)?]))
+        // Format as plain text for better readability
+        let mut text = format!("Query: \"{}\" | Category: {} | Found: {} results | Showing: {}\n\n",
+            result.query,
+            args.category,
+            result.total,
+            result.returned
+        );
+
+        // Add results
+        for (i, item) in result.results.iter().enumerate() {
+            text.push_str(&format!("[{}] {}\n", i + 1, item.title));
+            text.push_str(&format!("    URL: {}\n", item.url));
+            text.push_str(&format!("    Engine: {}\n", item.engine));
+            if !item.content.is_empty() {
+                text.push_str(&format!("    Content: {}\n", item.content));
+            }
+            text.push('\n');
+        }
+
+        // Add answers if any
+        if !result.answers.is_empty() {
+            text.push_str("** Direct Answers:\n");
+            for answer in &result.answers {
+                text.push_str(&format!("    {}\n", answer));
+            }
+            text.push('\n');
+        }
+
+        // Add infoboxes if any
+        if !result.infoboxes.is_empty() {
+            text.push_str("** Infoboxes:\n");
+            for info in &result.infoboxes {
+                text.push_str(&format!("    {}\n", info));
+            }
+            text.push('\n');
+        }
+
+        // Add suggestions if any
+        if !result.suggestions.is_empty() {
+            text.push_str("** Suggestions:\n");
+            for sug in &result.suggestions {
+                text.push_str(&format!("    - {}\n", sug));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     /// NuFetch - Fetch web content with format conversion
@@ -387,42 +444,33 @@ ARGS:
     ///   url: "https://httpbin.org/headers" headers: {"Accept": "application/json"}
     #[tool(
         name = "nu.fetch",
-        description = r#"Fetch web content with browser-like headers and format conversion.
+        description = r#"Fetch web content with browser-like headers and automatic format conversion.
 
-FORMAT OPTIONS:
-- auto: Auto-detect based on content-type (default)
-  - JSON content-type → returns as JSON string
-  - HTML content-type → converts to Markdown
-  - Other → returns as text
-- json: Returns raw JSON string (no parsing)
-- markdown: Converts HTML to Markdown (adds note if not HTML)
-- text: Returns raw text content
+FORMAT CONVERSION:
+- HTML → Markdown (automatic)
+- JSON/Text → As-is
 
 BROWSER FINGERPRINTING:
 - Automatically adds Chrome-like User-Agent header
 - Mimics real browser to avoid bot detection
-- Override with custom headers if needed
 
 USAGE EXAMPLES:
-1. Fetch webpage as Markdown: url="https://example.com" format="markdown"
-2. Fetch JSON API: url="https://api.github.com/users/octocat" format="json"
-3. Auto-detect format: url="https://example.com/api/data" format="auto"
-4. Custom headers: url="https://httpbin.org/headers" headers={"Authorization": "Bearer token"}
-5. Raw text: url="https://example.com" format="text"
+1. Fetch webpage: url="https://example.com"
+2. Fetch API: url="https://api.github.com/users/octocat"
+3. Custom headers: url="https://httpbin.org/headers" headers={"Authorization": "Bearer token"}
 
 RESPONSE STRUCTURE:
 - url: The fetched URL
 - status: HTTP status code (200, 404, etc.)
 - content_type: Response content-type header
-- content: Response content (converted based on format)
-- format: Actual format returned (json/markdown/text)
+- content: Response content (HTML converted to Markdown)
+- format: Actual format returned (markdown/text)
 - error: Error message if status >= 400, null otherwise
 
 NOTES:
 - HTML to Markdown conversion uses html2md library
-- For JSON APIs, content is returned as string (parse with | from json in Nushell)
-- Timeout prevents hanging on slow responses (default: 30 seconds)
-- Custom User-Agent can be provided via headers to override default"#
+- Timeout prevents hanging (default: 30 seconds)
+- Custom User-Agent can be provided via headers"#
     )]
     pub async fn nu_fetch(&self, args: Parameters<NuFetchArgs>) -> Result<CallToolResult, McpError> {
         let args = &args.0;
@@ -432,8 +480,19 @@ NOTES:
             .await
             .map_err(|e| McpError::invalid_request(format!("fetch failed: {e}"), None))?;
 
-        let json = serde_json::to_value(&result).unwrap();
-        Ok(CallToolResult::success(vec![Content::json(json)?]))
+        let mut text = format!("URL: {}\nStatus: {}\nContent-Type: {}\nFormat: {}\n\n{}",
+            result.url,
+            result.status,
+            result.content_type,
+            result.format,
+            result.content
+        );
+
+        if let Some(err) = result.error {
+            text.push_str(&format!("\nError: {}", err));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 }
 

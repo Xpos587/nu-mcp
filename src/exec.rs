@@ -77,9 +77,6 @@ pub struct NuSearchArgs {
 pub struct NuFetchArgs {
     /// URL to fetch.
     pub url: String,
-    /// Response format: auto (default), json, markdown, text.
-    #[serde(default)]
-    pub format: Option<String>,
     /// HTTP headers as key-value pairs (optional).
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
@@ -219,7 +216,7 @@ impl NuExecutor {
         // Extract CWD from sentinel and return clean output
         // Sentinel is on its own line: ":::CWD:::/path/to/dir"
         // Everything before sentinel is user output, everything after is CWD (trimmed)
-        let (stdout, new_cwd) = if let Some(idx) = stdout_final.find(sentinel) {
+        let (clean_output, new_cwd) = if let Some(idx) = stdout_final.find(sentinel) {
             // Found sentinel - split and extract
             let before_sentinel = &stdout_final[..idx];
             let after_sentinel = &stdout_final[idx + sentinel.len()..];
@@ -235,8 +232,8 @@ impl NuExecutor {
             state.set_cwd(extracted_cwd.clone()).await;
 
             // Clean output: remove trailing newline from before_sentinel
-            let clean_output = before_sentinel.trim_end().to_string();
-            (clean_output, extracted_cwd)
+            let clean_output_inner = before_sentinel.trim_end().to_string();
+            (clean_output_inner, extracted_cwd)
         } else {
             // Sentinel not found - command likely failed or was killed, return raw output and keep current CWD
             (stdout_final.clone(), cwd.clone())
@@ -250,8 +247,7 @@ impl NuExecutor {
 
         Ok(NuExecResult {
             exit_code,
-            stdout,
-            stderr: stderr_final,
+            output: format!("{}{}", clean_output, if !stderr_final.is_empty() { format!("\n[stderr]\n{}", stderr_final) } else { String::new() }),
             took_ms,
             success: !timed_out && exit_code == 0,
         })
@@ -311,8 +307,7 @@ impl NuExecutor {
             Some(snapshot) => Ok(NuOutputResult {
                 id: snapshot.id,
                 status: format!("{:?}", snapshot.status).to_lowercase(),
-                stdout: snapshot.stdout,
-                stderr: snapshot.stderr,
+                output: format!("{}{}", snapshot.stdout, if !snapshot.stderr.is_empty() { format!("\n[stderr]\n{}", snapshot.stderr) } else { String::new() }),
                 exit_code: snapshot.exit_code,
                 took_secs: snapshot.started_at_secs,
             }),
@@ -531,12 +526,11 @@ impl NuExecutor {
         })
     }
 
-    /// Fetch web content with browser-like headers and format conversion
+    /// Fetch web content with browser-like headers and auto format conversion
     pub async fn fetch(&self, args: &NuFetchArgs) -> anyhow::Result<NuFetchResult> {
-        let format = args.format.as_ref().map(|s| s.as_str()).unwrap_or("auto");
         let timeout_sec = args.timeout.unwrap_or(30);
 
-        debug!("Fetching URL: {} with format: {}", args.url, format);
+        debug!("Fetching URL: {}", args.url);
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_sec))
@@ -580,38 +574,11 @@ impl NuExecutor {
 
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
-        // Determine and apply format conversion
-        let (content, final_format) = match format {
-            "auto" => {
-                // Auto-detect format based on content-type
-                if content_type.contains("json") {
-                    (body_str.clone(), "json".to_string())
-                } else if content_type.contains("html") {
-                    let markdown = html2md::parse_html(&body_str);
-                    (markdown, "markdown".to_string())
-                } else {
-                    (body_str.clone(), "text".to_string())
-                }
-            }
-            "json" => {
-                // Return as-is (assume JSON)
-                (body_str.clone(), "json".to_string())
-            }
-            "markdown" => {
-                if content_type.contains("html") {
-                    let markdown = html2md::parse_html(&body_str);
-                    (markdown, "markdown".to_string())
-                } else {
-                    // Not HTML, return as text with note
-                    (format!("<!-- Content is not HTML, returning as text -->\n\n{}", body_str), "text".to_string())
-                }
-            }
-            "text" => {
-                (body_str.clone(), "text".to_string())
-            }
-            _ => {
-                return Err(anyhow::anyhow!("Unknown format: {}", format));
-            }
+        // Auto-detect and convert format
+        let (content, final_format) = if content_type.contains("html") {
+            (html2md::parse_html(&body_str), "markdown".to_string())
+        } else {
+            (body_str, "text".to_string())
         };
 
         Ok(NuFetchResult {
@@ -726,8 +693,7 @@ async fn monitor_and_drain_pipes(state: AppState, id: String) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NuExecResult {
     pub exit_code: i32,
-    pub stdout: String,
-    pub stderr: String,
+    pub output: String,
     pub took_ms: u128,
     pub success: bool,
 }
@@ -743,8 +709,7 @@ pub struct NuBgResult {
 pub struct NuOutputResult {
     pub id: String,
     pub status: String,
-    pub stdout: String,
-    pub stderr: String,
+    pub output: String,
     pub exit_code: Option<i32>,
     pub took_secs: u64,
 }

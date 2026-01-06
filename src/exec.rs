@@ -134,7 +134,28 @@ impl NuExecutor {
         // Robust CWD wrapper: use 'try' to handle deleted directories gracefully
         // Nushell syntax: single quotes for path safety, print for output
         let sentinel = ":::CWD:::";
-        let full_command = format!("try {{ cd '{}' }}; {}; print $\"{}(pwd)\"", cwd, command, sentinel);
+        
+        // Auto-add | print if command doesn't already output something
+        // Nushell doesn't auto-print to stdout like Bash does
+        // print works for all data types (tables, strings, lists, etc.)
+        let cmd_trimmed = command.trim();
+        let already_outputs = cmd_trimmed.ends_with(" | print") 
+            || cmd_trimmed.ends_with("|print")
+            || cmd_trimmed.ends_with(" | to csv")
+            || cmd_trimmed.ends_with("|to csv")
+            || cmd_trimmed.ends_with(" | to json")
+            || cmd_trimmed.ends_with("|to json")
+            || cmd_trimmed.contains("> ") 
+            || cmd_trimmed.ends_with(">")
+            || cmd_trimmed.starts_with("print ");
+        
+        let command_with_output = if already_outputs {
+            command.to_string()
+        } else {
+            format!("{} | print", cmd_trimmed.trim_end_matches(';'))
+        };
+
+        let full_command = format!("try {{ cd '{}' }}; {}; print $\"{}(pwd)\"", cwd, command_with_output, sentinel);
 
         let mut cmd = Command::new(&self.nu_path);
         cmd.arg("-c").arg(&full_command);
